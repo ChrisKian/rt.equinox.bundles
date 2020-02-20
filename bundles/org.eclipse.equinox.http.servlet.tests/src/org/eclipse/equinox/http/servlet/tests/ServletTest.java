@@ -706,7 +706,7 @@ public class ServletTest extends TestCase {
 	}
 
 	static class TestFilter implements Filter {
-		AtomicBoolean called = new AtomicBoolean(false);
+		AtomicInteger called = new AtomicInteger(0);
 		@Override
 		public void init(FilterConfig filterConfig) throws ServletException {
 			// nothing
@@ -715,7 +715,7 @@ public class ServletTest extends TestCase {
 		@Override
 		public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain)
 				throws IOException, ServletException {
-			called.set(true);
+			called.incrementAndGet();
 			chain.doFilter(request, response);
 		}
 
@@ -724,10 +724,14 @@ public class ServletTest extends TestCase {
 			// nothing
 		}
 		void clear() {
-			called.set(false);
+			called.set(0);
 		}
 
 		public boolean getCalled() {
+			return called.get() >= 1;
+		}
+
+		public int getCount() {
 			return called.get();
 		}
 	}

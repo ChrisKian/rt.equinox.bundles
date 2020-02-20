@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2014, 2015 Raymond Augé and others.
+ * Copyright (c) 2014, 2016 Raymond Augé and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * which accompanies this distribution, and is available at
@@ -12,6 +12,7 @@
 package org.eclipse.equinox.http.servlet.internal.servlet;
 
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.Collections;
 import java.util.List;
 import javax.servlet.*;
@@ -33,6 +34,7 @@ public class ResponseStateHandler {
 		this.request = request;
 		this.response = response;
 		this.dispatchTargets = dispatchTargets;
+		this.dispatcherType = dispatcherType;
 	}
 
 	public void processRequest() throws IOException, ServletException {
@@ -49,6 +51,13 @@ public class ResponseStateHandler {
 		ServletRequestEvent servletRequestEvent = null;
 
 		try {
+			if (dispatcherType == DispatcherType.FORWARD) {
+				if (response.isCommitted()) {
+					throw new IllegalStateException("Response is committed"); //$NON-NLS-1$
+				}
+
+				response.resetBuffer();
+			}
 
 			if ((dispatchTargets.getDispatcherType() == DispatcherType.REQUEST) && !servletRequestListeners.isEmpty()) {
 				servletRequestEvent = new ServletRequestEvent(endpoint.getServletContext(), request);
@@ -92,7 +101,38 @@ public class ResponseStateHandler {
 				filterRegistration.removeReference();
 			}
 
-			if (dispatchTargets.getDispatcherType() == DispatcherType.REQUEST) {
+			if (dispatcherType == DispatcherType.FORWARD) {
+				response.flushBuffer();
+
+				HttpServletResponseWrapperImpl responseWrapper = HttpServletResponseWrapperImpl.findHttpRuntimeResponse(response);
+
+				if (responseWrapper != null) {
+					responseWrapper.setCompleted(true);
+				}
+				else {
+					try {
+						PrintWriter writer = response.getWriter();
+						writer.close();
+					}
+					catch (IllegalStateException ise1) {
+						try {
+							ServletOutputStream outputStream = response.getOutputStream();
+							outputStream.close();
+						}
+						catch (IllegalStateException ise2) {
+							// ignore
+						}
+						catch (IOException ioe) {
+							// ignore
+						}
+					}
+					catch (IOException ioe) {
+						// ignore
+					}
+				}
+			}
+
+			if (dispatcherType == DispatcherType.REQUEST) {
 				handleErrors();
 
 				for (ServletRequestListener servletRequestListener : servletRequestListeners) {
@@ -124,28 +164,13 @@ public class ResponseStateHandler {
 			throw new IllegalStateException("Response isn't a wrapper"); //$NON-NLS-1$
 		}
 
-		HttpServletResponseWrapper wrapper = (HttpServletResponseWrapper)response;
+		HttpServletResponseWrapperImpl responseWrapper = HttpServletResponseWrapperImpl.findHttpRuntimeResponse(response);
 
-		HttpServletResponseWrapperImpl wrapperImpl = null;
-
-		while (true) {
-			if (wrapper instanceof HttpServletResponseWrapperImpl) {
-				wrapperImpl = (HttpServletResponseWrapperImpl)wrapper;
-			}
-			else if (wrapper.getResponse() instanceof HttpServletResponseWrapper) {
-				wrapper = (HttpServletResponseWrapper)wrapper.getResponse();
-
-				continue;
-			}
-
-			break;
-		}
-
-		if (wrapperImpl == null) {
+		if (responseWrapper == null) {
 			throw new IllegalStateException("Can't locate response impl"); //$NON-NLS-1$
 		}
 
-		HttpServletResponse wrappedResponse = (HttpServletResponse)wrapperImpl.getResponse();
+		HttpServletResponse wrappedResponse = (HttpServletResponse)responseWrapper.getResponse();
 
 		if (wrappedResponse.isCommitted()) {
 			throwException(exception);
@@ -198,8 +223,11 @@ public class ResponseStateHandler {
 
 			};
 
-			HttpServletResponseWrapper wrapperResponse =
-				new HttpServletResponseWrapperImpl(wrappedResponse);
+		responseWrapper.setCompleted(false);
+		//responseWrapper = new HttpServletResponseWrapperImpl(wrappedResponse);
+
+		ResponseStateHandler responseStateHandler = new ResponseStateHandler(
+			request, responseWrapper, errorDispatchTargets, DispatcherType.ERROR);
 
 			ResponseStateHandler responseStateHandler = new ResponseStateHandler(
 				wrapperRequest, wrapperResponse, errorDispatchTargets);
@@ -218,44 +246,28 @@ public class ResponseStateHandler {
 			throw new IllegalStateException("Response isn't a wrapper"); //$NON-NLS-1$
 		}
 
-		HttpServletResponseWrapper wrapper = (HttpServletResponseWrapper)response;
+		HttpServletResponseWrapperImpl responseWrapper = HttpServletResponseWrapperImpl.findHttpRuntimeResponse(response);
 
-		final int status = wrapper.getStatus();
+		if (responseWrapper == null) {
+			throw new IllegalStateException("Can't locate response impl"); //$NON-NLS-1$
+		}
+
+		int status = responseWrapper.getStatus();
 
 		if (status < HttpServletResponse.SC_BAD_REQUEST) {
 			return;
 		}
 
-		HttpServletResponseWrapperImpl wrapperImpl = null;
-
-		while (true) {
-			if (wrapper instanceof HttpServletResponseWrapperImpl) {
-				wrapperImpl = (HttpServletResponseWrapperImpl)wrapper;
-			}
-			else if (wrapper.getResponse() instanceof HttpServletResponseWrapper) {
-				wrapper = (HttpServletResponseWrapper)wrapper.getResponse();
-
-				continue;
-			}
-
-			break;
-		}
-
-		if (wrapperImpl == null) {
-			throw new IllegalStateException("Can't locate response impl"); //$NON-NLS-1$
-		}
-
-		final HttpServletResponseWrapperImpl finalWrapperImpl = wrapperImpl;
-
-		HttpServletResponse wrappedResponse = (HttpServletResponse)finalWrapperImpl.getResponse();
-
 		if (status == -1) {
 			// There's nothing more we can do here.
 			return;
 		}
+
+		HttpServletResponse wrappedResponse = (HttpServletResponse)responseWrapper.getResponse();
+
 		if (wrappedResponse.isCommitted()) {
 			// the response is committed already, but we need to propagate the error code anyway
-			wrappedResponse.sendError(status, wrapperImpl.getMessage());
+			wrappedResponse.sendError(status, responseWrapper.getMessage());
 			// There's nothing more we can do here.
 			return;
 		}
@@ -266,7 +278,7 @@ public class ResponseStateHandler {
 			String.valueOf(status), null, null, null, null, null, Match.EXACT, null);
 
 		if (errorDispatchTargets == null) {
-			wrappedResponse.sendError(status, wrapperImpl.getMessage());
+			wrappedResponse.sendError(status, responseWrapper.getMessage());
 
 			return;
 		}
@@ -303,11 +315,11 @@ public class ResponseStateHandler {
 
 			};
 
-			HttpServletResponseWrapper wrapperResponse =
-				new HttpServletResponseWrapperImpl(wrappedResponse);
+			responseWrapper.setCompleted(false);
+			//responseWrapper = new HttpServletResponseWrapperImpl(wrappedResponse)
 
 			ResponseStateHandler responseStateHandler = new ResponseStateHandler(
-				wrapperRequest, wrapperResponse, errorDispatchTargets);
+				wrapperRequest, responseWrapper, errorDispatchTargets);
 
 			wrappedResponse.setStatus(status);
 
@@ -333,6 +345,7 @@ public class ResponseStateHandler {
 	}
 
 	DispatchTargets dispatchTargets;
+	DispatcherType dispatcherType;
 	Exception exception;
 	HttpServletRequest request;
 	HttpServletResponse response;
