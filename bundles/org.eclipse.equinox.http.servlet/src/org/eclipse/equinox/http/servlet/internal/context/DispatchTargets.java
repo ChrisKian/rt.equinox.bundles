@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2014, 2015 Raymond Augé and others.
+ * Copyright (c) 2014, 2016 Raymond Augé and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * which accompanies this distribution, and is available at
@@ -104,16 +104,21 @@ public class DispatchTargets {
 		}
 
 		HttpServletRequest request = originalRequest;
-		HttpServletRequestWrapperImpl httpRuntimeRequest = HttpServletRequestWrapperImpl.findHttpRuntimeRequest(originalRequest);
+		HttpServletRequestWrapperImpl requestWrapper = HttpServletRequestWrapperImpl.findHttpRuntimeRequest(request);
+		HttpServletResponse responseWrapper = HttpServletResponseWrapperImpl.findHttpRuntimeResponse(response);
 
 		try {
-			if (httpRuntimeRequest == null) {
-				httpRuntimeRequest = new HttpServletRequestWrapperImpl(originalRequest);
-				request = httpRuntimeRequest;
-				response = new HttpServletResponseWrapperImpl(response);
+			if (requestWrapper == null) {
+				requestWrapper = new HttpServletRequestWrapperImpl(request);
+				request = requestWrapper;
 			}
 
-			httpRuntimeRequest.push(this);
+			if (responseWrapper == null) {
+				responseWrapper = new HttpServletResponseWrapperImpl(response);
+				response = responseWrapper;
+			}
+
+			requestWrapper.push(this);
 
 			ResponseStateHandler responseStateHandler = new ResponseStateHandler(request, response, this);
 
@@ -129,7 +134,7 @@ public class DispatchTargets {
 			return true;
 		}
 		finally {
-			httpRuntimeRequest.pop();
+			requestWrapper.pop();
 
 			setter.close();
 		}
